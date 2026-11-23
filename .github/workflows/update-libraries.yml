@@ -1,0 +1,71 @@
+# Refreshes the published prompt libraries (DEV-23 of AI Prompt Assistant).
+#
+# The crawler walks each library on youmind.com's prompt API once, at the pace the app
+# itself keeps (at most 25 pages a minute), and publishes the result to the `data` branch
+# as one file per library beside `manifest.json`. Every copy of the app reads those files
+# instead of walking the pages itself.
+#
+# The `data` branch is rewritten as a single commit on every run, so the repository does
+# not grow by several megabytes each time a library changes.
+name: Update prompt libraries
+
+on:
+  schedule:
+    # Three times a day, off the hour.
+    - cron: '23 1,9,17 * * *'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Libraries to crawl, by slug and comma-separated (empty: all five)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-libraries
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch the libraries as last published
+        run: |
+          if git ls-remote --exit-code --heads origin data > /dev/null; then
+            git clone --quiet --depth 1 --branch data "https://github.com/${GITHUB_REPOSITORY}.git" data
+            rm -rf data/.git
+          else
+            mkdir data
+          fi
+
+      - name: Crawl
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          if [ -n "$ONLY" ]; then
+            node crawler.cjs --out data --only "$ONLY"
+          else
+            node crawler.cjs --out data
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp DATA_README.md data/README.md
+          cd data
+          git init --quiet --initial-branch data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          git commit --quiet --message "Prompt libraries, $(date --utc +%Y-%m-%dT%H:%MZ)"
+          git push --quiet --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
