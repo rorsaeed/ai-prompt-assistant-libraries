@@ -1,9 +1,17 @@
-# Refreshes the published prompt libraries (DEV-23 of AI Prompt Assistant).
+# Refreshes the published prompt libraries and their vectors (DEV-23 and DEV-27 / P05 of
+# AI Prompt Assistant).
 #
-# The crawler walks each library on youmind.com's prompt API once, at the pace the app
-# itself keeps (at most 25 pages a minute), and publishes the result to the `data` branch
-# as one file per library beside `manifest.json`. Every copy of the app reads those files
-# instead of walking the pages itself.
+# The crawler walks each of the eight libraries once with the app's own sync code: the
+# five on youmind.com's prompt API at the pace the app itself keeps (at most 25 pages a
+# minute), the three GitHub collections file by file. It publishes the result to the
+# `data` branch as one file per library beside `manifest.json`. Every copy of the app
+# reads those files instead of reading the sources itself.
+#
+# It then embeds every entry that is new or changed since the last run with the app's
+# pinned embedding model and publishes one vector file per library beside `vectors.json`,
+# so no copy of the app has to embed a library. The model (about 128 MB, from
+# huggingface.co, hash-checked) is cached between runs; ONNX Runtime is native, so it is
+# installed here rather than bundled into crawler.cjs.
 #
 # The `data` branch is rewritten as a single commit on every run, so the repository does
 # not grow by several megabytes each time a library changes.
@@ -16,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: 'Libraries to crawl, by slug and comma-separated (empty: all five)'
+        description: 'Libraries to crawl, by slug and comma-separated (empty: all eight). Vectors are built for all.'
         required: false
         default: ''
 
@@ -38,6 +46,26 @@ jobs:
         with:
           node-version: 22
 
+      # The version the app ships with (package.json of AI Prompt Assistant). The crawler
+      # finds it in node_modules beside crawler.cjs. Its install script would fetch CUDA
+      # binaries, which a CPU runner never uses.
+      - name: Install ONNX Runtime
+        env:
+          ONNXRUNTIME_NODE_INSTALL: skip
+        run: npm install --no-save --no-package-lock --no-audit --no-fund onnxruntime-node@1.29.0
+
+      # Changes exactly when the app pins another model, so a new model is fetched once
+      # and the old one's cache is left to expire.
+      - name: Name the embedding model
+        id: model
+        run: echo "key=embedding-model-$(node crawler.cjs --model-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the embedding model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: ${{ steps.model.outputs.key }}
+
       - name: Fetch the libraries as last published
         run: |
           if git ls-remote --exit-code --heads origin data > /dev/null; then
@@ -47,14 +75,18 @@ jobs:
             mkdir data
           fi
 
-      - name: Crawl
+      # --embed-minutes: no new batch of embeddings is started after 95 minutes, which
+      # leaves the publish step well inside the job's 120. The first run embeds about
+      # 49,000 entries; if it cannot finish them, the next run carries on, and an entry
+      # with no vector yet is still found by its words in the app.
+      - name: Crawl and embed
         env:
           ONLY: ${{ inputs.only }}
         run: |
           if [ -n "$ONLY" ]; then
-            node crawler.cjs --out data --only "$ONLY"
+            node crawler.cjs --out data --only "$ONLY" --vectors --model-dir models --embed-minutes 95
           else
-            node crawler.cjs --out data
+            node crawler.cjs --out data --vectors --model-dir models --embed-minutes 95
           fi
 
       - name: Publish

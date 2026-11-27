@@ -1,13 +1,79 @@
 "use strict";
+var __create = Object.create;
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
 };
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 
 // tools/library-mirror/cli.ts
-var import_node_path2 = require("node:path");
+var import_promises5 = require("node:fs/promises");
+var import_node_os = require("node:os");
+var import_node_path5 = require("node:path");
 var import_node_util = require("node:util");
+
+// src/shared/library-embedding-model.ts
+var LIBRARY_EMBEDDING_PASSAGE_MAX_CHARACTERS = 1600;
+var LIBRARY_EMBEDDING_MODEL = {
+  id: "paraphrase-multilingual-minilm-l12-v2",
+  repository: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  revision: "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+  licence: "Apache-2.0",
+  files: [
+    {
+      role: "model",
+      // Quantised u8/u8 for AVX2, which every x86-64 CPU the app supports has, and
+      // without the u8/s8 saturation an AVX2 CPU suffers on the s8 exports.
+      path: "onnx/model_quint8_avx2.onnx",
+      sha256: "98a01d88b7de996cdea58c32ca71208c09968d143798814b2ea09d3439dc334f",
+      size: 118453870
+    },
+    {
+      role: "tokenizer",
+      path: "tokenizer.json",
+      sha256: "2c3387be76557bd40970cec13153b3bbf80407865484b209e655e5e4729076b8",
+      size: 9081518
+    }
+  ],
+  dimensions: 384,
+  pooling: "mean",
+  normalize: true,
+  queryPrefix: "",
+  passagePrefix: "",
+  maxQueryTokens: 64,
+  // The model was trained on 128 tokens, and its card cuts there.
+  maxPassageTokens: 128,
+  passageRecipe: "title-description-prompt/v1"
+};
+function libraryEmbeddingPassageText(entry) {
+  const parts = [entry.title, entry.description ?? "", entry.prompt].map((part) => part.trim()).filter((part) => part !== "");
+  const joined = parts.join("\n");
+  if (joined.length <= LIBRARY_EMBEDDING_PASSAGE_MAX_CHARACTERS) return joined;
+  let end = LIBRARY_EMBEDDING_PASSAGE_MAX_CHARACTERS;
+  const last = joined.charCodeAt(end - 1);
+  if (last >= 55296 && last <= 56319) end -= 1;
+  return joined.slice(0, end);
+}
 
 // node_modules/zod/v3/external.js
 var external_exports = {};
@@ -4064,6 +4130,8 @@ var PROMPT_LIBRARY_SOURCES = [
 var promptLibrarySourceSchema = external_exports.enum(PROMPT_LIBRARY_SOURCES);
 var PROMPT_LIBRARY_MEDIA_TYPES = ["image", "video"];
 var promptLibraryMediaTypeSchema = external_exports.enum(PROMPT_LIBRARY_MEDIA_TYPES);
+var PROMPT_LIBRARY_PROMPT_KINDS = ["image", "video", "code"];
+var promptLibraryPromptKindSchema = external_exports.enum(PROMPT_LIBRARY_PROMPT_KINDS);
 var PROMPT_LIBRARY_SORT_ORDERS = ["newest", "oldest", "titleAsc"];
 var promptLibrarySortOrderSchema = external_exports.enum(PROMPT_LIBRARY_SORT_ORDERS);
 var PROMPT_LIBRARY_SOURCE_SLUGS = {
@@ -4127,6 +4195,16 @@ var PROMPT_LIBRARY_SOURCE_MEDIA_TYPES = {
   claudeOpus55: "video",
   gpt6Astra: "video"
 };
+var PROMPT_LIBRARY_SOURCE_PROMPT_KINDS = {
+  nanoBananaPro: "image",
+  nanoBananaTrending: "image",
+  gptImage2: "image",
+  seedance: "video",
+  seedance25: "video",
+  grokImagine: "video",
+  claudeOpus55: "code",
+  gpt6Astra: "code"
+};
 var PROMPT_LIBRARY_PAGE_SIZE = 18;
 function promptLibrarySourceSlug(source) {
   return PROMPT_LIBRARY_SOURCE_SLUGS[source];
@@ -4147,8 +4225,11 @@ function promptLibrarySourceMediaType(source) {
   return PROMPT_LIBRARY_SOURCE_MEDIA_TYPES[source];
 }
 var promptLibraryMediaType = promptLibrarySourceMediaType;
+function promptLibrarySourcePromptKind(source) {
+  return PROMPT_LIBRARY_SOURCE_PROMPT_KINDS[source];
+}
 function promptLibrarySourceUsesPromptFill(source) {
-  return source === "claudeOpus55" || source === "gpt6Astra";
+  return promptLibrarySourcePromptKind(source) === "code";
 }
 function tryPromptLibrarySourceFromSlug(slug) {
   return PROMPT_LIBRARY_SOURCES.find((source) => promptLibrarySourceSlug(source) === slug) ?? null;
@@ -4424,14 +4505,760 @@ function rotateLeft(value, bits) {
   return (value << bits | value >>> 32 - bits) >>> 0;
 }
 
-// src/main/prompt-library-mirror.ts
+// src/main/embedding/download.ts
+var import_node_crypto2 = require("node:crypto");
+var import_node_fs2 = require("node:fs");
+var import_promises2 = require("node:fs/promises");
+var import_node_path2 = require("node:path");
+
+// src/main/embedding/model-files.ts
 var import_node_crypto = require("node:crypto");
+var import_node_fs = require("node:fs");
+var import_promises = require("node:fs/promises");
+var import_node_path = require("node:path");
+function embeddingModelDir(root, descriptor) {
+  return (0, import_node_path.join)(root, descriptor.repository.replace("/", "__"), descriptor.revision);
+}
+function embeddingModelFilePath(dir, file) {
+  return (0, import_node_path.join)(dir, ...file.path.split("/"));
+}
+function embeddingModelFile(descriptor, role) {
+  const file = descriptor.files.find((candidate) => candidate.role === role);
+  if (file === void 0) throw new Error(`The embedding model descriptor has no ${role} file.`);
+  return file;
+}
+async function embeddingModelFilesPresent(dir, descriptor) {
+  for (const file of descriptor.files) {
+    try {
+      const info = await (0, import_promises.stat)(embeddingModelFilePath(dir, file));
+      if (!info.isFile() || info.size !== file.size) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+async function sha256OfFile(path) {
+  const hash = (0, import_node_crypto.createHash)("sha256");
+  for await (const chunk of (0, import_node_fs.createReadStream)(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+// src/main/embedding/download.ts
+var HUGGING_FACE_ORIGIN = "https://huggingface.co";
+var HUGGING_FACE_HOST = /^(?:[a-z0-9-]+\.)*(?:huggingface\.co|hf\.co)$/;
+var MAX_REDIRECTS = 5;
+var USER_AGENT = "ai_prompt_assistant/1";
+var PROGRESS_INTERVAL_MS = 200;
+var EmbeddingDownloadError = class extends Error {
+  constructor(code, file = null) {
+    super(`The embedding model download failed (${code}${file === null ? "" : `: ${file}`}).`);
+    this.code = code;
+    this.file = file;
+    this.name = "EmbeddingDownloadError";
+  }
+};
+function isLoopbackOrigin(origin) {
+  try {
+    const url = new URL(origin);
+    return url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]") && url.pathname === "/";
+  } catch {
+    return false;
+  }
+}
+async function sizeOf(path) {
+  try {
+    const info = await (0, import_promises2.stat)(path);
+    return info.isFile() ? info.size : 0;
+  } catch {
+    return 0;
+  }
+}
+async function hashExisting(path, hash) {
+  for await (const chunk of (0, import_node_fs2.createReadStream)(path)) hash.update(chunk);
+}
+function isAbort(error, signal) {
+  return signal?.aborted === true || error instanceof Error && error.name === "AbortError";
+}
+var EmbeddingModelDownloader = class {
+  constructor(options) {
+    this.options = options;
+    this.descriptor = options.descriptor ?? LIBRARY_EMBEDDING_MODEL;
+    const origin = options.origin ?? HUGGING_FACE_ORIGIN;
+    if (origin !== HUGGING_FACE_ORIGIN && !isLoopbackOrigin(origin.endsWith("/") ? origin : `${origin}/`)) {
+      throw new Error("The embedding model is downloaded from huggingface.co only.");
+    }
+    this.origin = origin.replace(/\/$/, "");
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.attempts = Math.max(1, options.attempts ?? 3);
+    this.now = options.now ?? (() => Date.now());
+  }
+  descriptor;
+  origin;
+  fetchImpl;
+  attempts;
+  now;
+  running = null;
+  /** The folder the files are kept in (`embeddingModelDir`). */
+  get dir() {
+    return embeddingModelDir(this.options.root, this.descriptor);
+  }
+  get totalBytes() {
+    return this.descriptor.files.reduce((sum, file) => sum + file.size, 0);
+  }
+  async state() {
+    if (await embeddingModelFilesPresent(this.dir, this.descriptor)) return "installed";
+    for (const file of this.descriptor.files) {
+      const path = embeddingModelFilePath(this.dir, file);
+      if (await sizeOf(path) > 0 || await sizeOf(`${path}.part`) > 0) return "partial";
+    }
+    return "missing";
+  }
+  /** Fetches whatever is missing; a second call while one runs joins it. */
+  download(request = {}) {
+    if (this.running === null) {
+      this.running = this.downloadAll(request).finally(() => {
+        this.running = null;
+      });
+    }
+    return this.running;
+  }
+  /** Deletes the model's folder, partial files included. */
+  async remove() {
+    if (this.running !== null) throw new Error("The embedding model is being downloaded.");
+    await (0, import_promises2.rm)(this.dir, { recursive: true, force: true });
+  }
+  url(file) {
+    const path = file.path.split("/").map(encodeURIComponent).join("/");
+    return `${this.origin}/${this.descriptor.repository}/resolve/${this.descriptor.revision}/${path}`;
+  }
+  allowedHop(url) {
+    if (this.origin !== HUGGING_FACE_ORIGIN) return url.origin === this.origin;
+    return url.protocol === "https:" && HUGGING_FACE_HOST.test(url.hostname);
+  }
+  async downloadAll(request) {
+    const files = this.descriptor.files;
+    const sizes = await Promise.all(files.map((file) => sizeOf(embeddingModelFilePath(this.dir, file))));
+    const done = files.map((file, index) => sizes[index] === file.size);
+    let lastReport = 0;
+    const report = (fileIndex, receivedInFile, force) => {
+      const now = this.now();
+      if (!force && now - lastReport < PROGRESS_INTERVAL_MS) return;
+      lastReport = now;
+      const before = files.reduce((sum, file, index) => sum + (done[index] === true && index !== fileIndex ? file.size : 0), 0);
+      request.onProgress?.({
+        file: files[fileIndex]?.path ?? "",
+        fileIndex,
+        fileCount: files.length,
+        receivedBytes: before + receivedInFile,
+        totalBytes: this.totalBytes
+      });
+    };
+    for (const [index, file] of files.entries()) {
+      if (done[index] === true) {
+        report(index, file.size, true);
+        continue;
+      }
+      await this.downloadFile(file, request.signal, (received, force) => report(index, received, force));
+      done[index] = true;
+      report(index, file.size, true);
+    }
+  }
+  async downloadFile(file, signal, onBytes) {
+    const target = embeddingModelFilePath(this.dir, file);
+    const part = `${target}.part`;
+    try {
+      await (0, import_promises2.mkdir)((0, import_node_path2.dirname)(target), { recursive: true });
+    } catch {
+      throw new EmbeddingDownloadError("disk", file.path);
+    }
+    for (let attempt = 1; ; attempt += 1) {
+      if (signal?.aborted === true) throw new EmbeddingDownloadError("cancelled", file.path);
+      try {
+        await this.fetchToPart(file, part, signal, onBytes);
+        break;
+      } catch (error) {
+        if (isAbort(error, signal)) throw new EmbeddingDownloadError("cancelled", file.path);
+        const failure = error instanceof EmbeddingDownloadError ? error : new EmbeddingDownloadError("network", file.path);
+        const final = failure.code === "checksum" || failure.code === "size" || failure.code === "refused-host" || failure.code === "disk";
+        if (final || attempt >= this.attempts) throw failure;
+      }
+    }
+    try {
+      await (0, import_promises2.rm)(target, { force: true });
+      await (0, import_promises2.rename)(part, target);
+    } catch {
+      throw new EmbeddingDownloadError("disk", file.path);
+    }
+  }
+  /** Follows redirects by hand, checking every hop's host. */
+  async request(file, headers, signal) {
+    let url = new URL(this.url(file));
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+      if (!this.allowedHop(url)) throw new EmbeddingDownloadError("refused-host", file.path);
+      const init = { headers, redirect: "manual" };
+      if (signal !== void 0) init.signal = signal;
+      const response = await this.fetchImpl(url, init);
+      if (response.status < 300 || response.status >= 400) return response;
+      const location = response.headers.get("location");
+      await response.body?.cancel();
+      if (location === null) throw new EmbeddingDownloadError("http", file.path);
+      url = new URL(location, url);
+    }
+    throw new EmbeddingDownloadError("http", file.path);
+  }
+  async fetchToPart(file, part, signal, onBytes) {
+    let resumeFrom = await sizeOf(part);
+    if (resumeFrom >= file.size) {
+      await (0, import_promises2.rm)(part, { force: true });
+      resumeFrom = 0;
+    }
+    const headers = { "User-Agent": USER_AGENT };
+    if (resumeFrom > 0) headers["Range"] = `bytes=${String(resumeFrom)}-`;
+    const response = await this.request(file, headers, signal);
+    let offset = 0;
+    if (resumeFrom > 0 && response.status === 206) offset = resumeFrom;
+    else if (response.status !== 200) {
+      await response.body?.cancel();
+      throw new EmbeddingDownloadError("http", file.path);
+    }
+    if (response.body === null) throw new EmbeddingDownloadError("http", file.path);
+    const hash = (0, import_node_crypto2.createHash)("sha256");
+    if (offset > 0) await hashExisting(part, hash);
+    let received = offset;
+    onBytes(received, true);
+    const sink = (0, import_node_fs2.createWriteStream)(part, { flags: offset > 0 ? "a" : "w" });
+    const closed = new Promise((resolve2, reject) => {
+      sink.once("close", resolve2);
+      sink.once("error", reject);
+    });
+    closed.catch(() => void 0);
+    const sinkGone = closed.then(
+      () => Promise.reject(new EmbeddingDownloadError("disk", file.path)),
+      () => Promise.reject(new EmbeddingDownloadError("disk", file.path))
+    );
+    sinkGone.catch(() => void 0);
+    const reader = response.body.getReader();
+    try {
+      for (; ; ) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.length;
+        if (received > file.size) throw new EmbeddingDownloadError("size", file.path);
+        hash.update(value);
+        if (sink.destroyed) throw new EmbeddingDownloadError("disk", file.path);
+        if (!sink.write(value)) await Promise.race([new Promise((resolve2) => sink.once("drain", resolve2)), sinkGone]);
+        onBytes(received, false);
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => void 0);
+      sink.end();
+      await closed.catch(() => void 0);
+      if (error instanceof EmbeddingDownloadError && error.code === "size") await (0, import_promises2.rm)(part, { force: true });
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+    sink.end();
+    try {
+      await closed;
+    } catch {
+      throw new EmbeddingDownloadError("disk", file.path);
+    }
+    if (received !== file.size) {
+      throw new EmbeddingDownloadError("network", file.path);
+    }
+    if (hash.digest("hex") !== file.sha256) {
+      await (0, import_promises2.rm)(part, { force: true });
+      throw new EmbeddingDownloadError("checksum", file.path);
+    }
+  }
+};
+
+// src/main/embedding/precompiled-charsmap.ts
+var VALUE_MASK = 2147483647;
+function hasLeaf(unit) {
+  return (unit >>> 8 & 1) === 1;
+}
+function unitValue(unit) {
+  return unit & VALUE_MASK;
+}
+function unitLabel(unit) {
+  return (unit & 2147483903) >>> 0;
+}
+function unitOffset(unit) {
+  return unit >>> 10 << ((unit & 1 << 9) >>> 6);
+}
+var encoder = new TextEncoder();
+var decoder = new TextDecoder("utf-8", { fatal: false });
+var PrecompiledCharsmap = class {
+  trie;
+  normalized;
+  segmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
+  cache = /* @__PURE__ */ new Map();
+  constructor(base64) {
+    const bytes = Buffer.from(base64, "base64");
+    if (bytes.length < 4) throw new Error("The precompiled charsmap is truncated.");
+    const trieSize = bytes.readUInt32LE(0);
+    if (trieSize % 4 !== 0 || 4 + trieSize > bytes.length) throw new Error("The precompiled charsmap is malformed.");
+    const trie = new Uint32Array(trieSize / 4);
+    for (let index = 0; index < trie.length; index += 1) trie[index] = bytes.readUInt32LE(4 + index * 4);
+    this.trie = trie;
+    this.normalized = new Uint8Array(bytes.subarray(4 + trieSize));
+  }
+  /** The values of every key that is a prefix of `key`, shortest first. */
+  commonPrefixSearch(key) {
+    const results = [];
+    let nodePosition = 0;
+    let unit = this.trie[nodePosition] ?? 0;
+    nodePosition ^= unitOffset(unit);
+    for (const byte of key) {
+      if (byte === 0) break;
+      nodePosition ^= byte;
+      unit = this.trie[nodePosition] ?? 0;
+      if (unitLabel(unit) !== byte) return results;
+      nodePosition ^= unitOffset(unit);
+      if (hasLeaf(unit)) results.push(unitValue(this.trie[nodePosition] ?? 0));
+    }
+    return results;
+  }
+  /** The replacement for `chunk`, or `null` when the map leaves it alone. */
+  transform(chunk) {
+    const cached = this.cache.get(chunk);
+    if (cached !== void 0) return cached;
+    const results = this.commonPrefixSearch(encoder.encode(chunk));
+    let replacement = null;
+    const start = results[0];
+    if (start !== void 0) {
+      let end = start;
+      while (end < this.normalized.length && this.normalized[end] !== 0) end += 1;
+      replacement = decoder.decode(this.normalized.subarray(start, end));
+    }
+    if (this.cache.size < 5e4) this.cache.set(chunk, replacement);
+    return replacement;
+  }
+  normalize(text2) {
+    let out = "";
+    for (const { segment } of this.segmenter.segment(text2)) {
+      if (Buffer.byteLength(segment, "utf8") < 6) {
+        const whole = this.transform(segment);
+        if (whole !== null) {
+          out += whole;
+          continue;
+        }
+      }
+      for (const character of segment) {
+        out += this.transform(character) ?? character;
+      }
+    }
+    return out;
+  }
+};
+
+// src/main/embedding/tokenizer.ts
+var UNKNOWN_PENALTY = 10;
+var METASPACE = String.fromCodePoint(9601);
+var WHITESPACE = new RegExp("\\p{White_Space}+", "u");
+function record(value, what) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`tokenizer.json: ${what} is not an object.`);
+  }
+  return value;
+}
+function text(value, what) {
+  if (typeof value !== "string") throw new Error(`tokenizer.json: ${what} is not a string.`);
+  return value;
+}
+function normalizerFrom(spec) {
+  if (spec === null || spec === void 0) return (value) => value;
+  const node = record(spec, "normalizer");
+  switch (node["type"]) {
+    case "Sequence": {
+      const parts = node["normalizers"];
+      if (!Array.isArray(parts)) throw new Error("tokenizer.json: a Sequence normalizer has no list.");
+      const steps = parts.map((part) => normalizerFrom(part));
+      return (value) => steps.reduce((current, step) => step(current), value);
+    }
+    case "Precompiled": {
+      const charsmap = new PrecompiledCharsmap(text(node["precompiled_charsmap"], "precompiled_charsmap"));
+      return (value) => charsmap.normalize(value);
+    }
+    case "Replace": {
+      const pattern = record(node["pattern"], "Replace pattern");
+      const content = text(node["content"], "Replace content");
+      if (typeof pattern["Regex"] === "string") {
+        const expression = new RegExp(pattern["Regex"], "gu");
+        return (value) => value.replace(expression, content);
+      }
+      const literal = text(pattern["String"], "Replace pattern");
+      return (value) => value.split(literal).join(content);
+    }
+    case "NFKC":
+      return (value) => value.normalize("NFKC");
+    default:
+      throw new Error(`tokenizer.json: the ${String(node["type"])} normalizer is not supported.`);
+  }
+}
+function metaspaceFrom(node) {
+  const replacement = text(node["replacement"] ?? METASPACE, "Metaspace replacement");
+  const scheme = node["prepend_scheme"] ?? (node["add_prefix_space"] === false ? "never" : "always");
+  if (scheme !== "always" && scheme !== "never" && scheme !== "first") {
+    throw new Error(`tokenizer.json: the Metaspace scheme ${typeof scheme === "string" ? scheme : "given"} is not supported.`);
+  }
+  if (node["split"] === false) throw new Error("tokenizer.json: a Metaspace that does not split is not supported.");
+  return (words) => {
+    const out = [];
+    words.forEach((word, position) => {
+      let value = word.split(" ").join(replacement);
+      const prepend = scheme === "always" || scheme === "first" && position === 0;
+      if (prepend && !value.startsWith(replacement)) value = replacement + value;
+      let current = "";
+      for (const character of value) {
+        if (character === replacement && current !== "") {
+          out.push(current);
+          current = "";
+        }
+        current += character;
+      }
+      if (current !== "") out.push(current);
+    });
+    return out;
+  };
+}
+function preTokenizerFrom(spec) {
+  if (spec === null || spec === void 0) return (words) => [...words];
+  const node = record(spec, "pre_tokenizer");
+  switch (node["type"]) {
+    case "Sequence": {
+      const parts = node["pretokenizers"];
+      if (!Array.isArray(parts)) throw new Error("tokenizer.json: a Sequence pre-tokenizer has no list.");
+      const steps = parts.map((part) => preTokenizerFrom(part));
+      return (words) => steps.reduce((current, step) => step(current), [...words]);
+    }
+    case "WhitespaceSplit":
+      return (words) => words.flatMap((word) => word.split(WHITESPACE).filter((part) => part !== ""));
+    case "Metaspace":
+      return metaspaceFrom(node);
+    default:
+      throw new Error(`tokenizer.json: the ${String(node["type"])} pre-tokenizer is not supported.`);
+  }
+}
+function templateFrom(spec, idOf) {
+  const node = record(spec, "post_processor");
+  if (node["type"] !== "TemplateProcessing") {
+    throw new Error(`tokenizer.json: the ${String(node["type"])} post-processor is not supported.`);
+  }
+  const single = node["single"];
+  if (!Array.isArray(single)) throw new Error("tokenizer.json: the template has no single sequence.");
+  const before = [];
+  const after = [];
+  let seenSequence = false;
+  for (const piece of single) {
+    const item = record(piece, "template piece");
+    if ("Sequence" in item) {
+      seenSequence = true;
+      continue;
+    }
+    const special = record(item["SpecialToken"], "template special token");
+    const id = idOf(text(special["id"], "template special token id"));
+    if (id === void 0) throw new Error("tokenizer.json: the template names a token the vocabulary lacks.");
+    (seenSequence ? after : before).push(id);
+  }
+  if (!seenSequence) throw new Error("tokenizer.json: the template has no sequence.");
+  return { before, after };
+}
+var UnigramTokenizer = class _UnigramTokenizer {
+  pieces = /* @__PURE__ */ new Map();
+  scores;
+  unknownId;
+  unknownScore;
+  longestPiece;
+  normalize;
+  preTokenize;
+  special;
+  before;
+  after;
+  constructor(json) {
+    const model = record(json["model"], "model");
+    if (model["type"] !== "Unigram") throw new Error(`tokenizer.json: the ${String(model["type"])} model is not supported.`);
+    if (model["byte_fallback"] === true) throw new Error("tokenizer.json: byte fallback is not supported.");
+    const vocab = model["vocab"];
+    if (!Array.isArray(vocab) || vocab.length === 0) throw new Error("tokenizer.json: the vocabulary is empty.");
+    this.scores = new Float64Array(vocab.length);
+    let minimum = Number.POSITIVE_INFINITY;
+    let longest = 1;
+    vocab.forEach((item, id) => {
+      if (!Array.isArray(item) || typeof item[0] !== "string" || typeof item[1] !== "number") {
+        throw new Error("tokenizer.json: a vocabulary entry is malformed.");
+      }
+      const piece = item[0];
+      const score = item[1];
+      if (!this.pieces.has(piece)) this.pieces.set(piece, id);
+      this.scores[id] = score;
+      if (score < minimum) minimum = score;
+      if (piece.length > longest) longest = piece.length;
+    });
+    const unknownId = model["unk_id"];
+    if (typeof unknownId !== "number" || unknownId < 0 || unknownId >= vocab.length) {
+      throw new Error("tokenizer.json: the model has no unknown token.");
+    }
+    this.unknownId = unknownId;
+    this.unknownScore = minimum - UNKNOWN_PENALTY;
+    this.longestPiece = longest;
+    this.normalize = normalizerFrom(json["normalizer"]);
+    this.preTokenize = preTokenizerFrom(json["pre_tokenizer"]);
+    const added = Array.isArray(json["added_tokens"]) ? json["added_tokens"] : [];
+    this.special = added.map((token) => record(token, "added token")).filter((token) => token["special"] === true).map((token) => {
+      const id = token["id"];
+      if (typeof id !== "number") throw new Error("tokenizer.json: an added token has no id.");
+      if (token["single_word"] === true) throw new Error("tokenizer.json: single-word added tokens are not supported.");
+      return { id, content: text(token["content"], "added token"), lstrip: token["lstrip"] === true, rstrip: token["rstrip"] === true };
+    }).filter((token) => token.content !== "").sort((left, right) => right.content.length - left.content.length);
+    const template = templateFrom(json["post_processor"], (token) => this.pieces.get(token));
+    this.before = template.before;
+    this.after = template.after;
+  }
+  /**
+   * The id padding positions carry. They are masked out, but an XLM-RoBERTa graph derives
+   * position ids from where the padding id is, so it must be the model's own.
+   */
+  get padId() {
+    return this.pieces.get("<pad>") ?? 1;
+  }
+  static fromJson(source) {
+    return new _UnigramTokenizer(record(JSON.parse(source), "tokenizer.json"));
+  }
+  /** The text's ids with the template's special tokens, at most `maxTokens` in all. */
+  encode(input, maxTokens) {
+    const room = Math.max(0, Math.floor(maxTokens) - this.before.length - this.after.length);
+    const pieces = [];
+    for (const part of this.splitOnSpecial(input)) {
+      if (typeof part === "number") {
+        pieces.push(part);
+        continue;
+      }
+      const normalized = this.normalize(part);
+      if (normalized === "") continue;
+      for (const word of this.preTokenize([normalized])) pieces.push(...this.viterbi(word));
+    }
+    const truncated = pieces.length > room;
+    return { ids: [...this.before, ...pieces.slice(0, room), ...this.after], truncated };
+  }
+  /** The raw text cut around special tokens, which become their ids untouched. */
+  splitOnSpecial(input) {
+    if (this.special.length === 0) return [input];
+    const parts = [];
+    let rest = input;
+    for (; ; ) {
+      let found = null;
+      for (const token of this.special) {
+        const at = rest.indexOf(token.content);
+        if (at >= 0 && (found === null || at < found.at)) found = { token, at };
+      }
+      if (found === null) break;
+      let head = rest.slice(0, found.at);
+      if (found.token.lstrip) head = head.replace(new RegExp("\\p{White_Space}+$", "u"), "");
+      if (head !== "") parts.push(head);
+      parts.push(found.token.id);
+      rest = rest.slice(found.at + found.token.content.length);
+      if (found.token.rstrip) rest = rest.replace(new RegExp("^\\p{White_Space}+", "u"), "");
+    }
+    if (rest !== "") parts.push(rest);
+    return parts;
+  }
+  /** The best-scoring segmentation of one word, consecutive unknown characters fused. */
+  viterbi(word) {
+    const size = word.length;
+    const bestScore = new Float64Array(size + 1);
+    const startsAt = new Int32Array(size + 1).fill(-1);
+    const tokenId = new Int32Array(size + 1).fill(-1);
+    startsAt[0] = 0;
+    let position = 0;
+    while (position < size) {
+      const characterLength = (word.codePointAt(position) ?? 0) > 65535 ? 2 : 1;
+      const reached = bestScore[position] ?? 0;
+      let hasSingle = false;
+      const limit = Math.min(size, position + this.longestPiece);
+      for (let end2 = position + 1; end2 <= limit; end2 += 1) {
+        const id = this.pieces.get(word.slice(position, end2));
+        if (id === void 0) continue;
+        const candidate = (this.scores[id] ?? 0) + reached;
+        if ((startsAt[end2] ?? -1) < 0 || candidate > (bestScore[end2] ?? 0)) {
+          bestScore[end2] = candidate;
+          startsAt[end2] = position;
+          tokenId[end2] = id;
+        }
+        if (end2 - position === characterLength) hasSingle = true;
+      }
+      if (!hasSingle) {
+        const end2 = position + characterLength;
+        const candidate = this.unknownScore + reached;
+        if ((startsAt[end2] ?? -1) < 0 || candidate > (bestScore[end2] ?? 0)) {
+          bestScore[end2] = candidate;
+          startsAt[end2] = position;
+          tokenId[end2] = this.unknownId;
+        }
+      }
+      position += characterLength;
+    }
+    const reversed = [];
+    let end = size;
+    let inUnknown = false;
+    while (end > 0) {
+      const start = startsAt[end] ?? 0;
+      const id = tokenId[end] ?? this.unknownId;
+      if (id === this.unknownId) {
+        if (!inUnknown) reversed.push(this.unknownId);
+        inUnknown = true;
+      } else {
+        reversed.push(id);
+        inUnknown = false;
+      }
+      end = start;
+    }
+    return reversed.reverse();
+  }
+};
+
+// src/main/embedding/engine.ts
+async function loadOrtBinding() {
+  const imported = await import("onnxruntime-node");
+  const candidates = [imported];
+  if (typeof imported === "object" && imported !== null && "default" in imported) candidates.push(imported.default);
+  for (const candidate of candidates) {
+    if (typeof candidate !== "object" && typeof candidate !== "function" || candidate === null) continue;
+    const module2 = candidate;
+    const session = module2["InferenceSession"];
+    const Tensor = module2["Tensor"];
+    if (session === void 0 || typeof session.create !== "function" || typeof Tensor !== "function") continue;
+    const create = session.create;
+    const TensorClass = Tensor;
+    return {
+      // From the bytes, never from a path: see `loadOnnxRuntime` in shot-boundary-model.ts.
+      createSession: (model, threads) => create.call(session, model, {
+        intraOpNumThreads: Math.max(1, Math.floor(threads)),
+        interOpNumThreads: 1,
+        graphOptimizationLevel: "all",
+        executionProviders: ["cpu"]
+      }),
+      int64Tensor: (data, dims) => new TensorClass("int64", data, dims)
+    };
+  }
+  throw new Error("onnxruntime-node exposes no InferenceSession");
+}
+var DEFAULT_BATCH_SIZE = 16;
+var EmbeddingEngine = class _EmbeddingEngine {
+  constructor(tokenizer, session, ort, spec, batchSize) {
+    this.tokenizer = tokenizer;
+    this.session = session;
+    this.ort = ort;
+    this.spec = spec;
+    this.batchSize = batchSize;
+  }
+  released = false;
+  static async load(files, options) {
+    const tokenizer = UnigramTokenizer.fromJson(files.tokenizerJson);
+    const ort = options.ort ?? await loadOrtBinding();
+    const session = await ort.createSession(files.model, options.threads);
+    if (!session.inputNames.includes("input_ids") || !session.inputNames.includes("attention_mask")) {
+      await session.release();
+      throw new Error("The embedding model does not take input_ids and attention_mask.");
+    }
+    return new _EmbeddingEngine(tokenizer, session, ort, options.spec, Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE));
+  }
+  /** The token ids a text is embedded from, prefix and special tokens included. */
+  tokenize(text2, kind) {
+    const prefix = kind === "query" ? this.spec.queryPrefix : this.spec.passagePrefix;
+    const budget = kind === "query" ? this.spec.maxQueryTokens : this.spec.maxPassageTokens;
+    return this.tokenizer.encode(`${prefix}${text2}`, budget).ids;
+  }
+  /**
+   * One normalised vector per text, in the order given. Texts are batched by length, so
+   * a batch pads little, and each batch is one inference call.
+   */
+  async embed(texts, kind) {
+    if (this.released) throw new Error("The embedding engine was released.");
+    const tokenized = texts.map((text2, index) => ({ index, ids: this.tokenize(text2, kind) }));
+    const order = [...tokenized].sort((left, right) => left.ids.length - right.ids.length || left.index - right.index);
+    const vectors = new Array(texts.length);
+    for (let start = 0; start < order.length; start += this.batchSize) {
+      const batch = order.slice(start, start + this.batchSize);
+      const pooled = await this.runBatch(batch.map((item) => item.ids));
+      batch.forEach((item, position) => {
+        const vector = pooled[position];
+        if (vector !== void 0) vectors[item.index] = vector;
+      });
+    }
+    return vectors;
+  }
+  async release() {
+    if (this.released) return;
+    this.released = true;
+    await this.session.release();
+  }
+  async runBatch(batch) {
+    const rows = batch.length;
+    const width = batch.reduce((longest, ids) => Math.max(longest, ids.length), 0);
+    const inputIds = new BigInt64Array(rows * width).fill(BigInt(this.tokenizer.padId));
+    const mask = new BigInt64Array(rows * width);
+    batch.forEach((ids, row) => {
+      ids.forEach((id, column) => {
+        inputIds[row * width + column] = BigInt(id);
+        mask[row * width + column] = 1n;
+      });
+    });
+    const feeds = {
+      input_ids: this.ort.int64Tensor(inputIds, [rows, width]),
+      attention_mask: this.ort.int64Tensor(mask, [rows, width])
+    };
+    if (this.session.inputNames.includes("token_type_ids")) {
+      feeds["token_type_ids"] = this.ort.int64Tensor(new BigInt64Array(rows * width), [rows, width]);
+    }
+    const outputs = await this.session.run(feeds);
+    const name = this.session.outputNames.includes("last_hidden_state") ? "last_hidden_state" : this.session.outputNames[0];
+    const hidden = name === void 0 ? void 0 : outputs[name];
+    if (hidden === void 0 || !(hidden.data instanceof Float32Array) || hidden.dims.length !== 3) {
+      throw new Error("The embedding model returned no token vectors.");
+    }
+    const [outRows, outWidth, dimensions] = hidden.dims;
+    if (outRows !== rows || outWidth !== width || dimensions !== this.spec.dimensions) {
+      throw new Error("The embedding model returned vectors of an unexpected shape.");
+    }
+    return batch.map((ids, row) => pool(hidden.data, row, width, ids.length, this.spec));
+  }
+};
+function pool(hidden, row, width, length, spec) {
+  const dimensions = spec.dimensions;
+  const vector = new Float32Array(dimensions);
+  const base = row * width * dimensions;
+  const tokens = spec.pooling === "cls" ? 1 : Math.max(1, length);
+  for (let token = 0; token < tokens; token += 1) {
+    const offset = base + token * dimensions;
+    for (let dimension = 0; dimension < dimensions; dimension += 1) vector[dimension] = (vector[dimension] ?? 0) + (hidden[offset + dimension] ?? 0);
+  }
+  for (let dimension = 0; dimension < dimensions; dimension += 1) vector[dimension] = (vector[dimension] ?? 0) / tokens;
+  if (spec.normalize) normalizeInPlace(vector);
+  return vector;
+}
+function normalizeInPlace(vector) {
+  let sum = 0;
+  for (const value of vector) sum += value * value;
+  const norm = Math.sqrt(sum);
+  if (norm > 0) for (let index = 0; index < vector.length; index += 1) vector[index] = (vector[index] ?? 0) / norm;
+  return vector;
+}
+
+// src/main/prompt-library-mirror.ts
+var import_node_crypto3 = require("node:crypto");
 var PROMPT_LIBRARY_MIRROR_SOURCES = [
   "seedance",
   "seedance25",
   "grokImagine",
   "claudeOpus55",
-  "gpt6Astra"
+  "gpt6Astra",
+  "nanoBananaPro",
+  "nanoBananaTrending",
+  "gptImage2"
 ];
 var PROMPT_LIBRARY_MIRROR_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1e3;
 var PROMPT_LIBRARY_MIRROR_MAX_BYTES = 96 * 1024 * 1024;
@@ -4470,25 +5297,25 @@ function promptLibraryMirrorFileName(source, sha256) {
 function isPromptLibraryMirrorFileName(name) {
   return /^[a-z0-9_]+\.[0-9a-f]{12}\.json$/u.test(name);
 }
-function sha256Hex(text) {
-  return (0, import_node_crypto.createHash)("sha256").update(text, "utf8").digest("hex");
+function sha256Hex(text2) {
+  return (0, import_node_crypto3.createHash)("sha256").update(text2, "utf8").digest("hex");
 }
-function parsePromptLibraryMirrorManifest(text) {
-  return promptLibraryMirrorManifestSchema.parse(JSON.parse(text));
+function parsePromptLibraryMirrorManifest(text2) {
+  return promptLibraryMirrorManifestSchema.parse(JSON.parse(text2));
 }
 function encodePromptLibraryMirrorManifest(manifest) {
   return `${JSON.stringify(manifest, null, 2)}
 `;
 }
 function encodePromptLibraryMirrorLibrary(cache) {
-  const text = JSON.stringify(promptLibraryCacheToJson(cache));
-  return { text, sha256: sha256Hex(text), bytes: Buffer.byteLength(text, "utf8") };
+  const text2 = JSON.stringify(promptLibraryCacheToJson(cache));
+  return { text: text2, sha256: sha256Hex(text2), bytes: Buffer.byteLength(text2, "utf8") };
 }
-function decodePromptLibraryMirrorLibrary(source, text, expectedSha256) {
-  if (sha256Hex(text) !== expectedSha256) {
+function decodePromptLibraryMirrorLibrary(source, text2, expectedSha256) {
+  if (sha256Hex(text2) !== expectedSha256) {
     throw new Error(`The mirrored ${promptLibrarySourceSlug(source)} library does not match its manifest.`);
   }
-  const decoded = JSON.parse(text);
+  const decoded = JSON.parse(text2);
   if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
     throw new Error("Expected a JSON object.");
   }
@@ -4501,6 +5328,247 @@ function decodePromptLibraryMirrorLibrary(source, text, expectedSha256) {
     throw new Error(`The mirrored ${promptLibrarySourceSlug(source)} library holds no prompts.`);
   }
   return { ...cache, source, entries };
+}
+
+// src/main/prompt-library-vector-mirror.ts
+var import_node_crypto5 = require("node:crypto");
+
+// src/main/library-search/vector-file.ts
+var import_node_crypto4 = require("node:crypto");
+var VECTOR_FILE_FORMAT = 1;
+var VECTOR_FILE_QUANTIZATION = "int8";
+var MAGIC = "APAV";
+var TEXT_HASH_BYTES = 8;
+var CHECKSUM_BYTES = 32;
+var VectorFileError = class extends Error {
+  constructor(code) {
+    super(`The library vector file is unusable (${code}).`);
+    this.code = code;
+    this.name = "VectorFileError";
+  }
+};
+function embeddingTextHash(text2) {
+  return (0, import_node_crypto4.createHash)("sha256").update(text2, "utf8").digest("hex").slice(0, TEXT_HASH_BYTES * 2);
+}
+function quantizeVector(vector) {
+  let largest = 0;
+  for (const value of vector) largest = Math.max(largest, Math.abs(value));
+  const values = new Int8Array(vector.length);
+  if (largest === 0) return { scale: 0, values };
+  const scale = largest / 127;
+  for (let index = 0; index < vector.length; index += 1) {
+    values[index] = Math.max(-127, Math.min(127, Math.round((vector[index] ?? 0) / scale)));
+  }
+  return { scale: Math.fround(scale), values };
+}
+function headerFor(descriptor, library, count) {
+  return {
+    format: VECTOR_FILE_FORMAT,
+    library,
+    model: descriptor.id,
+    repository: descriptor.repository,
+    revision: descriptor.revision,
+    passageRecipe: descriptor.passageRecipe,
+    maxPassageTokens: descriptor.maxPassageTokens,
+    dimensions: descriptor.dimensions,
+    quantization: VECTOR_FILE_QUANTIZATION,
+    count
+  };
+}
+function encodeQuantizedVectorFile(descriptor, library, records) {
+  const dimensions = descriptor.dimensions;
+  const header = Buffer.from(JSON.stringify(headerFor(descriptor, library, records.length)), "utf8");
+  const ids = records.map((record2) => {
+    const bytes = Buffer.from(record2.id, "utf8");
+    if (bytes.length > 65535 || bytes.length === 0) throw new Error("A vector record has an unusable entry id.");
+    return bytes;
+  });
+  const idBytes = ids.reduce((sum, bytes) => sum + 2 + bytes.length, 0);
+  const size = 8 + header.length + idBytes + records.length * (TEXT_HASH_BYTES + 4 + dimensions) + CHECKSUM_BYTES;
+  const out = Buffer.alloc(size);
+  let offset = out.write(MAGIC, 0, "ascii");
+  offset = out.writeUInt32LE(header.length, offset);
+  offset += header.copy(out, offset);
+  for (const bytes of ids) {
+    offset = out.writeUInt16LE(bytes.length, offset);
+    offset += bytes.copy(out, offset);
+  }
+  for (const record2 of records) {
+    if (!/^[0-9a-f]{16}$/.test(record2.textHash)) throw new Error("A vector record has an unusable text hash.");
+    offset += out.write(record2.textHash, offset, "hex");
+  }
+  for (const record2 of records) {
+    if (record2.values.length !== dimensions) throw new Error("A vector has the wrong number of dimensions.");
+  }
+  for (const { scale } of records) offset = out.writeFloatLE(scale, offset);
+  for (const { values } of records) {
+    out.set(new Uint8Array(values.buffer, values.byteOffset, values.length), offset);
+    offset += values.length;
+  }
+  (0, import_node_crypto4.createHash)("sha256").update(out.subarray(0, offset)).digest().copy(out, offset);
+  return out;
+}
+function quantizedVectorRecord(vectors, row) {
+  const start = row * vectors.dimensions;
+  return {
+    id: vectors.ids[row] ?? "",
+    textHash: vectors.textHashes[row] ?? "",
+    scale: vectors.scales[row] ?? 0,
+    values: vectors.matrix.slice(start, start + vectors.dimensions)
+  };
+}
+function parseHeader(json) {
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    throw new VectorFileError("malformed");
+  }
+  if (typeof value !== "object" || value === null) throw new VectorFileError("malformed");
+  const header = value;
+  const library = promptLibrarySourceSchema.safeParse(header["library"]);
+  const strings = ["model", "repository", "revision", "passageRecipe", "quantization"];
+  const count = header["count"];
+  const dimensions = header["dimensions"];
+  const maxPassageTokens = header["maxPassageTokens"];
+  if (header["format"] !== VECTOR_FILE_FORMAT || !library.success || strings.some((key) => typeof header[key] !== "string") || typeof count !== "number" || !Number.isInteger(count) || count < 0 || typeof dimensions !== "number" || !Number.isInteger(dimensions) || dimensions <= 0 || typeof maxPassageTokens !== "number") {
+    throw new VectorFileError("malformed");
+  }
+  return header;
+}
+function readVectorFileHeader(bytes) {
+  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (buffer.length < 8 || buffer.toString("ascii", 0, 4) !== MAGIC) throw new VectorFileError("malformed");
+  const headerLength = buffer.readUInt32LE(4);
+  if (8 + headerLength > buffer.length) throw new VectorFileError("malformed");
+  return parseHeader(buffer.toString("utf8", 8, 8 + headerLength));
+}
+function decodeVectorFile(bytes, options) {
+  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const header = readVectorFileHeader(buffer);
+  const { descriptor } = options;
+  if (header.model !== descriptor.id || header.repository !== descriptor.repository || header.revision !== descriptor.revision || header.passageRecipe !== descriptor.passageRecipe || header.maxPassageTokens !== descriptor.maxPassageTokens || header.dimensions !== descriptor.dimensions || header.quantization !== VECTOR_FILE_QUANTIZATION) {
+    throw new VectorFileError("model-mismatch");
+  }
+  if (header.library !== options.library) throw new VectorFileError("library-mismatch");
+  if (buffer.length < 8 + CHECKSUM_BYTES) throw new VectorFileError("malformed");
+  const bodyEnd = buffer.length - CHECKSUM_BYTES;
+  const checksum = (0, import_node_crypto4.createHash)("sha256").update(buffer.subarray(0, bodyEnd)).digest();
+  if (!checksum.equals(buffer.subarray(bodyEnd))) throw new VectorFileError("checksum");
+  const { count, dimensions } = header;
+  let offset = 8 + buffer.readUInt32LE(4);
+  const ids = [];
+  for (let index = 0; index < count; index += 1) {
+    if (offset + 2 > bodyEnd) throw new VectorFileError("malformed");
+    const length = buffer.readUInt16LE(offset);
+    offset += 2;
+    if (offset + length > bodyEnd) throw new VectorFileError("malformed");
+    ids.push(buffer.toString("utf8", offset, offset + length));
+    offset += length;
+  }
+  if (offset + count * (TEXT_HASH_BYTES + 4 + dimensions) !== bodyEnd) throw new VectorFileError("malformed");
+  const hashesAt = offset;
+  const scalesAt = hashesAt + count * TEXT_HASH_BYTES;
+  const matrixAt = scalesAt + count * 4;
+  const keep = [];
+  const textHashes = [];
+  for (let index = 0; index < count; index += 1) {
+    const hash = buffer.toString("hex", hashesAt + index * TEXT_HASH_BYTES, hashesAt + (index + 1) * TEXT_HASH_BYTES);
+    const id = ids[index] ?? "";
+    if (options.currentTextHashes !== void 0 && options.currentTextHashes.get(id) !== hash) continue;
+    keep.push(index);
+    textHashes.push(hash);
+  }
+  const scales = new Float32Array(keep.length);
+  const matrix = new Int8Array(keep.length * dimensions);
+  keep.forEach((index, row) => {
+    scales[row] = buffer.readFloatLE(scalesAt + index * 4);
+    const start = matrixAt + index * dimensions;
+    matrix.set(new Int8Array(buffer.buffer, buffer.byteOffset + start, dimensions), row * dimensions);
+  });
+  return {
+    library: header.library,
+    dimensions,
+    ids: keep.map((index) => ids[index] ?? ""),
+    textHashes,
+    scales,
+    matrix
+  };
+}
+
+// src/main/prompt-library-vector-mirror.ts
+var PROMPT_LIBRARY_VECTORS_MANIFEST_FILE = "vectors.json";
+var PROMPT_LIBRARY_VECTORS_SCHEMA = 1;
+var PROMPT_LIBRARY_VECTORS_MAX_BYTES = 64 * 1024 * 1024;
+var VECTOR_FILE_MIN_BYTES_PER_SECOND = 64 * 1024;
+var VECTOR_FILE_NAME = /^[a-z0-9_]+\.[0-9a-f]{12}\.apv$/u;
+var isoDateSchema2 = external_exports.string().refine((value) => !Number.isNaN(Date.parse(value)), "Expected a date.");
+var promptLibraryVectorsModelSchema = external_exports.object({
+  id: external_exports.string().min(1),
+  repository: external_exports.string().min(1),
+  revision: external_exports.string().min(1),
+  passage_recipe: external_exports.string().min(1),
+  max_passage_tokens: external_exports.number().int().positive(),
+  dimensions: external_exports.number().int().positive(),
+  quantization: external_exports.string().min(1),
+  /** `VECTOR_FILE_FORMAT` of the files. */
+  format: external_exports.number().int().positive()
+});
+var promptLibraryVectorsLibrarySchema = external_exports.object({
+  /**
+   * A bare file name beside the manifest, `<slug>.<first twelve of the hash>.apv`, for the
+   * same reasons as a library file's: never a path or a URL, and never served out of step
+   * with the manifest that names it.
+   */
+  file: external_exports.string().regex(VECTOR_FILE_NAME),
+  sha256: external_exports.string().regex(/^[0-9a-f]{64}$/u),
+  bytes: external_exports.number().int().positive(),
+  /** How many entries the file holds a vector for. */
+  vectors: external_exports.number().int().nonnegative(),
+  /** How many entries the library file held when these were made; more than `vectors` while embedding is still catching up. */
+  entries: external_exports.number().int().nonnegative(),
+  /** The library file (`manifest.json`'s `sha256`) the vectors were made from. */
+  library_sha256: external_exports.string().regex(/^[0-9a-f]{64}$/u),
+  /** When this file last changed. */
+  updated_at: isoDateSchema2
+});
+var promptLibraryVectorsManifestSchema = external_exports.object({
+  schema: external_exports.literal(PROMPT_LIBRARY_VECTORS_SCHEMA),
+  model: promptLibraryVectorsModelSchema,
+  /** Keyed by the library's slug (`promptLibrarySourceSlug`), like `manifest.json`. */
+  libraries: external_exports.record(external_exports.string(), promptLibraryVectorsLibrarySchema)
+});
+function promptLibraryVectorsModel(descriptor = LIBRARY_EMBEDDING_MODEL) {
+  return {
+    id: descriptor.id,
+    repository: descriptor.repository,
+    revision: descriptor.revision,
+    passage_recipe: descriptor.passageRecipe,
+    max_passage_tokens: descriptor.maxPassageTokens,
+    dimensions: descriptor.dimensions,
+    quantization: VECTOR_FILE_QUANTIZATION,
+    format: VECTOR_FILE_FORMAT
+  };
+}
+function promptLibraryVectorsModelMatches(model, descriptor = LIBRARY_EMBEDDING_MODEL) {
+  const expected = promptLibraryVectorsModel(descriptor);
+  return Object.keys(expected).every((key) => model[key] === expected[key]);
+}
+function promptLibraryVectorFileName(source, sha256) {
+  return `${promptLibrarySourceSlug(source)}.${sha256.slice(0, 12)}.apv`;
+}
+function isPromptLibraryVectorFileName(name) {
+  return VECTOR_FILE_NAME.test(name);
+}
+function parsePromptLibraryVectorsManifest(text2) {
+  return promptLibraryVectorsManifestSchema.parse(JSON.parse(text2));
+}
+function encodePromptLibraryVectorsManifest(manifest) {
+  return `${JSON.stringify(manifest, null, 2)}
+`;
+}
+function sha256OfBytes(bytes) {
+  return (0, import_node_crypto5.createHash)("sha256").update(bytes).digest("hex");
 }
 
 // src/main/prompt-library-parser.ts
@@ -4626,8 +5694,8 @@ var PromptLibraryParser = class _PromptLibraryParser {
     if (values.length === 0) return null;
     return values.some((match) => match[1] === "true");
   }
-  extractBalancedSection(text, startIndex, openChar, closeChar) {
-    if (startIndex < 0 || startIndex >= text.length || text[startIndex] !== openChar) {
+  extractBalancedSection(text2, startIndex, openChar, closeChar) {
+    if (startIndex < 0 || startIndex >= text2.length || text2[startIndex] !== openChar) {
       throw new PromptLibraryParseException(
         `Could not find a balanced section that starts with ${openChar}.`
       );
@@ -4635,8 +5703,8 @@ var PromptLibraryParser = class _PromptLibraryParser {
     let depth = 0;
     let inString = false;
     let escaping = false;
-    for (let index = startIndex; index < text.length; index++) {
-      const char = text[index];
+    for (let index = startIndex; index < text2.length; index++) {
+      const char = text2[index];
       if (inString) {
         if (escaping) {
           escaping = false;
@@ -4657,7 +5725,7 @@ var PromptLibraryParser = class _PromptLibraryParser {
         depth++;
       } else if (char === closeChar) {
         depth--;
-        if (depth === 0) return text.slice(startIndex, index + 1);
+        if (depth === 0) return text2.slice(startIndex, index + 1);
       }
     }
     throw new PromptLibraryParseException(
@@ -4786,12 +5854,12 @@ var TEXT_REFERENCE = /^\$[0-9a-f]+$/;
 var TEXT_REFERENCE_FIELDS = ["content", "translatedContent"];
 function decodeFlightTextRecords(payload) {
   const bytes = Buffer.from(payload, "utf8");
-  const text = bytes.toString("latin1");
-  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const text2 = bytes.toString("latin1");
+  const decoder2 = new TextDecoder("utf-8", { fatal: true });
   const records = /* @__PURE__ */ new Map();
   let offset = 0;
-  while (offset < text.length) {
-    const match = TEXT_RECORD_HEADER.exec(text.slice(offset));
+  while (offset < text2.length) {
+    const match = TEXT_RECORD_HEADER.exec(text2.slice(offset));
     const id = match?.[1];
     const length = match?.[2];
     if (match === null || id === void 0 || length === void 0) break;
@@ -4799,7 +5867,7 @@ function decodeFlightTextRecords(payload) {
     const end = start + Number.parseInt(length, 16);
     if (end > bytes.length) break;
     try {
-      records.set(id, decoder.decode(bytes.subarray(start, end)));
+      records.set(id, decoder2.decode(bytes.subarray(start, end)));
     } catch {
     }
     offset = end;
@@ -4938,8 +6006,8 @@ var RequestPacer = class {
 };
 
 // src/main/strip-bom.ts
-function stripBom(text) {
-  return text.charCodeAt(0) === 65279 ? text.slice(1) : text;
+function stripBom(text2) {
+  return text2.charCodeAt(0) === 65279 ? text2.slice(1) : text2;
 }
 
 // src/main/prompt-library-sync.ts
@@ -4949,7 +6017,9 @@ var MARKETING_PROMPT_API_URL = "https://youmind.com/youmarketing-api/prompts";
 var SEEDANCE_README_URL = "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-seedance-2-prompts/main/README.md";
 var SEEDANCE_VIDEO_URLS_URL = "https://raw.githubusercontent.com/YouMind-OpenLab/awesome-seedance-2-prompts/main/video-urls.json";
 var STALE_AFTER_MS = 24 * 60 * 60 * 1e3;
-var MIRROR_LIBRARY_TIMEOUT_MS = 12e4;
+var MIRROR_LIBRARY_MIN_TIMEOUT_MS = 12e4;
+var MIRROR_LIBRARY_MIN_BYTES_PER_SECOND = 256 * 1024;
+var MIRROR_MANIFEST_REUSE_MS = 6e4;
 var PROMPT_API_PACING = { limit: 25, windowMs: 6e4 };
 var PROMPT_API_RETRY_WAITS_MS = [15e3, 3e4, 6e4];
 var PROMPT_API_RETRY_AFTER_CAP_MS = 12e4;
@@ -4967,6 +6037,7 @@ var PromptLibrarySyncService = class {
   sleep;
   retryWaitsMs;
   mirrorBaseUrl;
+  manifestRead = null;
   /**
    * One pacer for the whole service, not one per sync: the host counts every request from
    * this machine together, whichever library and whichever of its endpoints it is for, so
@@ -4987,7 +6058,7 @@ var PromptLibrarySyncService = class {
     });
   }
   async syncLibrary(source, options = {}) {
-    const mirrored = await this.syncFromMirror(source, options);
+    const mirrored = await this.syncLibraryFromMirror(source, options);
     if (mirrored) return mirrored;
     if (source === "nanoBananaTrending") return this.syncTrending(options);
     if (promptLibrarySourceGithubReferencesBaseUrl(source)) return this.syncGithubReferences(source, options);
@@ -4999,24 +6070,21 @@ var PromptLibrarySyncService = class {
    * file when it is not the one the cache already holds. Two requests to a static host in
    * place of a paced walk of the prompt API, or one when nothing changed.
    *
-   * Answers null, and the caller syncs from the host as before, whenever the mirror cannot
-   * stand in for it: it is switched off, it does not carry this library, it cannot be
-   * reached or read, the file is not the one its manifest describes, or the crawler has
-   * not completed the library for `PROMPT_LIBRARY_MIRROR_MAX_AGE_MS`.
+   * Answers null whenever the mirror cannot stand in for the host: it is switched off, it
+   * does not carry this library, it cannot be reached or read, the file is not the one its
+   * manifest describes, or the crawler has not completed the library for
+   * `PROMPT_LIBRARY_MIRROR_MAX_AGE_MS`. `syncLibrary` then syncs from the host as before.
+   * The background update of the libraries nobody asked for calls this directly instead,
+   * because that update must never turn into a walk of the host.
    */
-  async syncFromMirror(source, options) {
+  async syncLibraryFromMirror(source, options = {}) {
     if (!this.mirrorBaseUrl || !isPromptLibraryMirrorSource(source)) return null;
     const stale = options.staleCache?.source === source ? options.staleCache : null;
     try {
       this.emitProgress(options, source, stale?.entries.length ?? 0, null, "Checking for updates");
-      const manifest = parsePromptLibraryMirrorManifest(
-        await this.requestText(`${this.mirrorBaseUrl}/${PROMPT_LIBRARY_MIRROR_MANIFEST_FILE}`)
-      );
-      const library = manifest.libraries[promptLibrarySourceSlug(source)];
-      if (!library || library.entries === 0) return null;
-      if (library.bytes > PROMPT_LIBRARY_MIRROR_MAX_BYTES) return null;
-      if (this.now() - Date.parse(library.updated_at) > PROMPT_LIBRARY_MIRROR_MAX_AGE_MS) return null;
-      if (stale && options.mirrorSha256 === library.sha256 && stale.entries.length >= library.entries) {
+      const library = await this.mirrorLibrary(source);
+      if (!library) return null;
+      if (stale && holdsMirrorLibrary(library, options.mirrorSha256 ?? null, stale.entries.length)) {
         const cache2 = this.mergedCache(source, stale, [], library.total_entries);
         this.emitProgress(options, source, cache2.entries.length, cache2.entries.length, "Library up to date");
         return { ...result(cache2, null, false), mirrorSha256: library.sha256 };
@@ -5025,7 +6093,7 @@ var PromptLibrarySyncService = class {
       const published = decodePromptLibraryMirrorLibrary(
         source,
         await this.requestText(`${this.mirrorBaseUrl}/${library.file}`, {
-          signal: AbortSignal.timeout(MIRROR_LIBRARY_TIMEOUT_MS)
+          signal: AbortSignal.timeout(mirrorLibraryTimeoutMs(library.bytes))
         }),
         library.sha256
       );
@@ -5035,7 +6103,9 @@ var PromptLibrarySyncService = class {
         source,
         stale,
         published.entries,
-        Math.max(published.totalEntries, library.total_entries)
+        Math.max(published.totalEntries, library.total_entries),
+        void 0,
+        promptLibrarySourceGithubReferencesBaseUrl(source) ? resolveGithubAcrossSyncs : void 0
       );
       await this.emitCache(options, cache);
       this.emitProgress(options, source, cache.entries.length, cache.totalEntries, "Library ready");
@@ -5043,6 +6113,41 @@ var PromptLibrarySyncService = class {
     } catch {
       return null;
     }
+  }
+  /**
+   * What the mirror says about a library, against what the cache holds, without
+   * downloading it: one small request, shared by every library asked about within a minute.
+   */
+  async checkMirror(source, held) {
+    try {
+      const library = await this.mirrorLibrary(source);
+      if (!library) return "unavailable";
+      return holdsMirrorLibrary(library, held.sha256, held.entries) ? "current" : "changed";
+    } catch {
+      return "unavailable";
+    }
+  }
+  /** The manifest's entry for a library, or null when the mirror cannot stand in for the host. */
+  async mirrorLibrary(source) {
+    if (!this.mirrorBaseUrl || !isPromptLibraryMirrorSource(source)) return null;
+    const manifest = await this.mirrorManifest(this.mirrorBaseUrl);
+    const library = manifest.libraries[promptLibrarySourceSlug(source)];
+    if (!library || library.entries === 0) return null;
+    if (library.bytes > PROMPT_LIBRARY_MIRROR_MAX_BYTES) return null;
+    if (this.now() - Date.parse(library.updated_at) > PROMPT_LIBRARY_MIRROR_MAX_AGE_MS) return null;
+    return library;
+  }
+  /** One manifest answers for every library, so one read is kept for a minute. */
+  mirrorManifest(baseUrl) {
+    const held = this.manifestRead;
+    if (held && this.now() - held.at < MIRROR_MANIFEST_REUSE_MS) return held.manifest;
+    const manifest = this.requestText(`${baseUrl}/${PROMPT_LIBRARY_MIRROR_MANIFEST_FILE}`).then(parsePromptLibraryMirrorManifest);
+    const read = { at: this.now(), manifest };
+    this.manifestRead = read;
+    void manifest.catch(() => {
+      if (this.manifestRead === read) this.manifestRead = null;
+    });
+    return manifest;
   }
   async syncWebsite(source, options) {
     let bootstrap = null;
@@ -5360,9 +6465,9 @@ var PromptLibrarySyncService = class {
       headers: { "User-Agent": "ai_prompt_assistant/1 libraries-sync", ...init.headers }
     });
     if (response.status !== 200) throw new Error(`Unexpected response (${response.status}) while fetching ${url}`);
-    const text = stripBom(await response.text());
-    if (!text) throw new Error(`Empty response while fetching ${url}`);
-    return text;
+    const text2 = stripBom(await response.text());
+    if (!text2) throw new Error(`Empty response while fetching ${url}`);
+    return text2;
   }
   emitProgress(options, source, loadedEntries, totalEntries, label) {
     const progress = totalEntries && totalEntries > 0 ? clamp(loadedEntries / totalEntries) : null;
@@ -5372,6 +6477,12 @@ var PromptLibrarySyncService = class {
     await options.onCacheUpdated?.(cache);
   }
 };
+function mirrorLibraryTimeoutMs(bytes) {
+  return Math.max(MIRROR_LIBRARY_MIN_TIMEOUT_MS, Math.ceil(bytes / MIRROR_LIBRARY_MIN_BYTES_PER_SECOND * 1e3));
+}
+function holdsMirrorLibrary(library, sha256, entries) {
+  return sha256 === library.sha256 && entries >= library.entries;
+}
 function result(cache, warning = null, hasNewPrompts = true) {
   return { cache, usedStaleCache: false, hasNewPrompts, warning };
 }
@@ -5428,20 +6539,20 @@ function asRecord(value) {
 }
 function asString2(value) {
   if (value === null || value === void 0) return null;
-  let text;
-  if (typeof value === "string") text = value;
-  else if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") text = String(value);
-  else if (typeof value === "symbol") text = value.description ?? "";
-  else if (typeof value === "function") text = value.name;
+  let text2;
+  if (typeof value === "string") text2 = value;
+  else if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") text2 = String(value);
+  else if (typeof value === "symbol") text2 = value.description ?? "";
+  else if (typeof value === "function") text2 = value.name;
   else {
     try {
-      text = JSON.stringify(value) ?? "";
+      text2 = JSON.stringify(value) ?? "";
     } catch {
-      text = "";
+      text2 = "";
     }
   }
-  text = text.trim();
-  return text ? text : null;
+  text2 = text2.trim();
+  return text2 ? text2 : null;
 }
 function apiModels(source) {
   if (source === "seedance") return ["seedance-2.0", "seedance-2-0"];
@@ -5648,18 +6759,178 @@ function extractSeedanceTotal(readme) {
 }
 
 // tools/library-mirror/build.ts
-var import_promises = require("node:fs/promises");
-var import_node_path = require("node:path");
-var NEVER_COMPLETED = (/* @__PURE__ */ new Date(0)).toISOString();
+var import_promises4 = require("node:fs/promises");
+var import_node_path4 = require("node:path");
+
+// tools/library-mirror/vectors.ts
+var import_promises3 = require("node:fs/promises");
+var import_node_path3 = require("node:path");
+var DEFAULT_BATCH_SIZE2 = 1024;
 var PROGRESS_LOG_INTERVAL_MS = 3e4;
+async function buildMirrorVectors(options) {
+  const descriptor = options.descriptor ?? LIBRARY_EMBEDDING_MODEL;
+  const now = options.now ?? Date.now;
+  const log = options.log ?? (() => void 0);
+  const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE2);
+  let budget = options.maxEmbedded ?? Number.POSITIVE_INFINITY;
+  const previous = await readVectorsManifest(options.directory, descriptor);
+  const libraries = {};
+  const reports = [];
+  let embedder = null;
+  let embedded = 0;
+  let embeddingMs = 0;
+  let lastLoggedAt = now();
+  const outOfBudget = () => budget <= 0 || options.deadline !== void 0 && now() >= options.deadline;
+  for (const library of options.libraries) {
+    const { source, cache } = library;
+    const slug = promptLibrarySourceSlug(source);
+    const name = promptLibrarySourceDisplayName(source);
+    const before = previous.libraries[slug];
+    const reusable = await readReusable(options.directory, source, before, descriptor, cache);
+    const records = /* @__PURE__ */ new Map();
+    const pending = [];
+    let reused = 0;
+    const seen = /* @__PURE__ */ new Set();
+    for (const entry of cache.entries) {
+      if (entry.id === "" || seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      const text2 = libraryEmbeddingPassageText(entry);
+      const textHash = embeddingTextHash(text2);
+      const carried = reusable.get(entry.id);
+      if (carried && carried.textHash === textHash) {
+        records.set(entry.id, carried);
+        reused += 1;
+      } else if (text2 !== "") {
+        pending.push({ id: entry.id, textHash, text: text2 });
+      }
+    }
+    let embeddedHere = 0;
+    for (let start = 0; start < pending.length && !outOfBudget(); ) {
+      const batch = pending.slice(start, start + Math.min(batchSize, budget));
+      embedder ??= await options.embedder();
+      const startedAt = performance.now();
+      const vectors = await embedder.embed(batch.map((item) => item.text));
+      embeddingMs += performance.now() - startedAt;
+      batch.forEach((item, index) => {
+        const vector = vectors[index];
+        if (vector === void 0 || vector.length !== descriptor.dimensions) {
+          throw new Error(`The embedder returned no usable vector for ${item.id}.`);
+        }
+        records.set(item.id, { id: item.id, textHash: item.textHash, ...quantizeVector(vector) });
+      });
+      start += batch.length;
+      embeddedHere += batch.length;
+      embedded += batch.length;
+      budget -= batch.length;
+      if (now() - lastLoggedAt >= PROGRESS_LOG_INTERVAL_MS) {
+        lastLoggedAt = now();
+        log(`${name} vectors: ${String(records.size)}/${String(cache.entries.length)}`);
+      }
+    }
+    const ordered = [];
+    for (const entry of cache.entries) {
+      const record2 = records.get(entry.id);
+      if (record2) {
+        ordered.push(record2);
+        records.delete(entry.id);
+      }
+    }
+    const remaining = pending.length - embeddedHere;
+    reports.push({ source, vectors: ordered.length, entries: cache.entries.length, embedded: embeddedHere, reused, remaining });
+    log(`${name} vectors: ${String(ordered.length)} of ${String(cache.entries.length)}` + (embeddedHere > 0 ? ` (${String(embeddedHere)} embedded)` : ""));
+    if (ordered.length === 0) continue;
+    const bytes = encodeQuantizedVectorFile(descriptor, source, ordered);
+    const sha256 = sha256OfBytes(bytes);
+    const file = promptLibraryVectorFileName(source, sha256);
+    const unchanged = before?.sha256 === sha256;
+    if (!unchanged) await writeAtomically((0, import_node_path3.join)(options.directory, file), bytes);
+    libraries[slug] = {
+      file,
+      sha256,
+      bytes: bytes.length,
+      vectors: ordered.length,
+      entries: cache.entries.length,
+      library_sha256: library.sha256,
+      updated_at: unchanged && before ? before.updated_at : new Date(now()).toISOString()
+    };
+  }
+  const manifest = {
+    schema: PROMPT_LIBRARY_VECTORS_SCHEMA,
+    model: promptLibraryVectorsModel(descriptor),
+    libraries
+  };
+  await writeAtomically(
+    (0, import_node_path3.join)(options.directory, PROMPT_LIBRARY_VECTORS_MANIFEST_FILE),
+    Buffer.from(encodePromptLibraryVectorsManifest(manifest), "utf8")
+  );
+  await removeSupersededVectorFiles(options.directory, previous, manifest);
+  return {
+    libraries: reports,
+    embedded,
+    complete: reports.every((report) => report.remaining === 0),
+    passagesPerSecond: embedded > 0 && embeddingMs > 0 ? embedded / (embeddingMs / 1e3) : null
+  };
+}
+async function readVectorsManifest(directory, descriptor = LIBRARY_EMBEDDING_MODEL) {
+  const empty = {
+    schema: PROMPT_LIBRARY_VECTORS_SCHEMA,
+    model: promptLibraryVectorsModel(descriptor),
+    libraries: {}
+  };
+  try {
+    const manifest = parsePromptLibraryVectorsManifest(
+      await (0, import_promises3.readFile)((0, import_node_path3.join)(directory, PROMPT_LIBRARY_VECTORS_MANIFEST_FILE), "utf8")
+    );
+    return promptLibraryVectorsModelMatches(manifest.model, descriptor) ? manifest : empty;
+  } catch {
+    return empty;
+  }
+}
+async function readReusable(directory, source, info, descriptor, cache) {
+  const reusable = /* @__PURE__ */ new Map();
+  if (!info) return reusable;
+  try {
+    const bytes = await (0, import_promises3.readFile)((0, import_node_path3.join)(directory, info.file));
+    if (sha256OfBytes(bytes) !== info.sha256) return reusable;
+    const current = new Map(cache.entries.map((entry) => [entry.id, embeddingTextHash(libraryEmbeddingPassageText(entry))]));
+    const vectors = decodeVectorFile(bytes, { descriptor, library: source, currentTextHashes: current });
+    for (let row = 0; row < vectors.ids.length; row += 1) {
+      const record2 = quantizedVectorRecord(vectors, row);
+      reusable.set(record2.id, record2);
+    }
+  } catch {
+  }
+  return reusable;
+}
+async function removeSupersededVectorFiles(directory, previous, current) {
+  const keep = new Set(
+    [...Object.values(previous.libraries), ...Object.values(current.libraries)].map((info) => info.file)
+  );
+  for (const name of await (0, import_promises3.readdir)(directory)) {
+    if (isPromptLibraryVectorFileName(name) && !keep.has(name)) {
+      await (0, import_promises3.rm)((0, import_node_path3.join)(directory, name), { force: true });
+    }
+  }
+}
+async function writeAtomically(path, contents) {
+  const temp = `${path}.tmp`;
+  await (0, import_promises3.writeFile)(temp, contents);
+  await (0, import_promises3.rm)(path, { force: true });
+  await (0, import_promises3.rename)(temp, path);
+}
+
+// tools/library-mirror/build.ts
+var NEVER_COMPLETED = (/* @__PURE__ */ new Date(0)).toISOString();
+var PROGRESS_LOG_INTERVAL_MS2 = 3e4;
 async function buildPromptLibraryMirror(options) {
   const now = options.now ?? Date.now;
   const log = options.log ?? (() => void 0);
   const sources = options.sources ?? PROMPT_LIBRARY_MIRROR_SOURCES;
-  await (0, import_promises.mkdir)(options.directory, { recursive: true });
+  await (0, import_promises4.mkdir)(options.directory, { recursive: true });
   const previous = await readManifest(options.directory);
   const libraries = { ...previous.libraries };
   const reports = [];
+  const publishedNow = /* @__PURE__ */ new Map();
   for (const source of sources) {
     const slug = promptLibrarySourceSlug(source);
     const name = promptLibrarySourceDisplayName(source);
@@ -5668,9 +6939,10 @@ async function buildPromptLibraryMirror(options) {
     reports.push(report.summary);
     if (report.next) {
       if (report.next.info.file !== published?.info.file) {
-        await writeAtomically((0, import_node_path.join)(options.directory, report.next.info.file), report.next.text);
+        await writeAtomically2((0, import_node_path4.join)(options.directory, report.next.info.file), report.next.text);
       }
       libraries[slug] = report.next.info;
+      publishedNow.set(slug, report.next);
     }
     log(`${name}: ${report.summary.outcome}, ${report.summary.entries} prompts` + (report.summary.added > 0 ? ` (${report.summary.added} new)` : "") + (report.summary.message ? `. ${report.summary.message}` : ""));
   }
@@ -5678,12 +6950,33 @@ async function buildPromptLibraryMirror(options) {
     schema: PROMPT_LIBRARY_MIRROR_SCHEMA,
     libraries: orderedLibraries(libraries)
   };
-  await writeAtomically(
-    (0, import_node_path.join)(options.directory, PROMPT_LIBRARY_MIRROR_MANIFEST_FILE),
+  await writeAtomically2(
+    (0, import_node_path4.join)(options.directory, PROMPT_LIBRARY_MIRROR_MANIFEST_FILE),
     encodePromptLibraryMirrorManifest(manifest)
   );
   await removeSupersededFiles(options.directory, previous, manifest);
-  return { libraries: reports };
+  if (!options.vectors) return { libraries: reports };
+  const vectorLibraries = [];
+  for (const [slug, info] of Object.entries(manifest.libraries)) {
+    const source = tryPromptLibrarySourceFromSlug(slug);
+    if (!source) continue;
+    const published = publishedNow.get(slug) ?? await readPublished(options.directory, source, info);
+    if (published) vectorLibraries.push({ source, cache: published.cache, sha256: published.info.sha256 });
+  }
+  try {
+    const vectors = await buildMirrorVectors({
+      ...options.vectors,
+      directory: options.directory,
+      libraries: vectorLibraries,
+      now,
+      log
+    });
+    return { libraries: reports, vectors };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`Vectors: failed. ${message}`);
+    return { libraries: reports, vectorsError: message };
+  }
 }
 async function crawlLibrary(source, published, crawler, now, log) {
   const name = promptLibrarySourceDisplayName(source);
@@ -5700,7 +6993,7 @@ async function crawlLibrary(source, published, crawler, now, log) {
       staleCache: published?.cache ?? null,
       onProgress: (progress) => {
         if (progress.label === SEEDANCE_GITHUB_FALLBACK_LABEL) usedReadmeFallback = true;
-        if (now() - lastLoggedAt < PROGRESS_LOG_INTERVAL_MS) return;
+        if (now() - lastLoggedAt < PROGRESS_LOG_INTERVAL_MS2) return;
         lastLoggedAt = now();
         log(`${name}: ${progress.label} ${progress.loadedEntries}/${progress.totalEntries ?? "?"}`);
       }
@@ -5733,7 +7026,7 @@ async function crawlLibrary(source, published, crawler, now, log) {
 async function readManifest(directory) {
   try {
     return parsePromptLibraryMirrorManifest(
-      await (0, import_promises.readFile)((0, import_node_path.join)(directory, PROMPT_LIBRARY_MIRROR_MANIFEST_FILE), "utf8")
+      await (0, import_promises4.readFile)((0, import_node_path4.join)(directory, PROMPT_LIBRARY_MIRROR_MANIFEST_FILE), "utf8")
     );
   } catch {
     return { schema: PROMPT_LIBRARY_MIRROR_SCHEMA, libraries: {} };
@@ -5742,8 +7035,8 @@ async function readManifest(directory) {
 async function readPublished(directory, source, info) {
   if (!info) return null;
   try {
-    const text = await (0, import_promises.readFile)((0, import_node_path.join)(directory, info.file), "utf8");
-    return { info, text, cache: decodePromptLibraryMirrorLibrary(source, text, info.sha256) };
+    const text2 = await (0, import_promises4.readFile)((0, import_node_path4.join)(directory, info.file), "utf8");
+    return { info, text: text2, cache: decodePromptLibraryMirrorLibrary(source, text2, info.sha256) };
   } catch {
     return null;
   }
@@ -5761,41 +7054,99 @@ async function removeSupersededFiles(directory, previous, current) {
   const keep = new Set(
     [...Object.values(previous.libraries), ...Object.values(current.libraries)].map((info) => info.file)
   );
-  for (const name of await (0, import_promises.readdir)(directory)) {
+  for (const name of await (0, import_promises4.readdir)(directory)) {
     if (isPromptLibraryMirrorFileName(name) && !keep.has(name)) {
-      await (0, import_promises.rm)((0, import_node_path.join)(directory, name), { force: true });
+      await (0, import_promises4.rm)((0, import_node_path4.join)(directory, name), { force: true });
     }
   }
 }
-async function writeAtomically(path, contents) {
+async function writeAtomically2(path, contents) {
   const temp = `${path}.tmp`;
-  await (0, import_promises.writeFile)(temp, contents, "utf8");
-  await (0, import_promises.rm)(path, { force: true });
-  await (0, import_promises.rename)(temp, path);
+  await (0, import_promises4.writeFile)(temp, contents, "utf8");
+  await (0, import_promises4.rm)(path, { force: true });
+  await (0, import_promises4.rename)(temp, path);
 }
 
 // tools/library-mirror/cli.ts
 async function main() {
+  const startedAt = Date.now();
   const { values } = (0, import_node_util.parseArgs)({
     options: {
       out: { type: "string", default: "data" },
-      only: { type: "string" }
+      only: { type: "string" },
+      vectors: { type: "boolean", default: false },
+      "model-dir": { type: "string", default: "models" },
+      threads: { type: "string" },
+      "embed-minutes": { type: "string" },
+      "max-embed": { type: "string" },
+      "model-key": { type: "boolean", default: false }
     }
   });
+  if (values["model-key"]) {
+    console.log(modelKey());
+    return;
+  }
   const sources = values.only === void 0 ? PROMPT_LIBRARY_MIRROR_SOURCES : parseSources(values.only);
-  const directory = (0, import_node_path2.resolve)(values.out);
+  const directory = (0, import_node_path5.resolve)(values.out);
+  const threads = values.threads === void 0 ? Math.max(1, (0, import_node_os.cpus)().length) : positiveInteger(values.threads, "--threads");
+  const embedMinutes = values["embed-minutes"] === void 0 ? void 0 : positiveNumber(values["embed-minutes"], "--embed-minutes");
+  const maxEmbed = values["max-embed"] === void 0 ? void 0 : positiveInteger(values["max-embed"], "--max-embed");
   console.log(`Building the prompt-library mirror in ${directory}`);
+  let engine = null;
   const report = await buildPromptLibraryMirror({
     directory,
     crawler: new PromptLibrarySyncService(),
     sources,
     log: (line) => {
       console.log(line);
-    }
+    },
+    ...values.vectors ? {
+      vectors: {
+        embedder: async () => {
+          engine = await loadEngine((0, import_node_path5.resolve)(values["model-dir"]), threads);
+          const loaded = engine;
+          return { embed: (texts) => loaded.embed(texts, "passage") };
+        },
+        ...embedMinutes === void 0 ? {} : { deadline: startedAt + embedMinutes * 6e4 },
+        ...maxEmbed === void 0 ? {} : { maxEmbedded: maxEmbed }
+      }
+    } : {}
   });
+  await engine?.release();
   const refreshed = report.libraries.filter((library) => library.outcome !== "failed");
   console.log(`Done: ${refreshed.length} of ${report.libraries.length} libraries refreshed.`);
+  if (report.vectors) {
+    const { vectors } = report;
+    const held = vectors.libraries.reduce((sum, library) => sum + library.vectors, 0);
+    const entries = vectors.libraries.reduce((sum, library) => sum + library.entries, 0);
+    const rate = vectors.passagesPerSecond === null ? "" : `, ${vectors.passagesPerSecond.toFixed(1)} passages/s on ${String(threads)} threads`;
+    console.log(`Vectors: ${String(held)} of ${String(entries)} entries, ${String(vectors.embedded)} embedded this run${rate}` + (vectors.complete ? "." : ". The rest is embedded by the next run."));
+  }
+  console.log(`Took ${((Date.now() - startedAt) / 6e4).toFixed(1)} minutes.`);
   if (refreshed.length === 0) process.exitCode = 1;
+}
+function modelKey() {
+  return `${LIBRARY_EMBEDDING_MODEL.id}-${LIBRARY_EMBEDDING_MODEL.revision}`;
+}
+async function loadEngine(root, threads) {
+  const descriptor = LIBRARY_EMBEDDING_MODEL;
+  const downloader = new EmbeddingModelDownloader({ root, descriptor });
+  if (!await embeddingModelFilesPresent(downloader.dir, descriptor)) {
+    console.log(`Downloading ${descriptor.repository}@${descriptor.revision.slice(0, 10)} (${(downloader.totalBytes / 1e6).toFixed(0)} MB)`);
+    try {
+      await downloader.download();
+    } catch (error) {
+      throw error instanceof EmbeddingDownloadError ? new Error(error.message) : error;
+    }
+  }
+  for (const file of descriptor.files) {
+    const hash = await sha256OfFile(embeddingModelFilePath(downloader.dir, file));
+    if (hash !== file.sha256) throw new Error(`${file.path} is not the pinned file.`);
+  }
+  const model = await (0, import_promises5.readFile)(embeddingModelFilePath(downloader.dir, embeddingModelFile(descriptor, "model")));
+  const tokenizerJson = await (0, import_promises5.readFile)(embeddingModelFilePath(downloader.dir, embeddingModelFile(descriptor, "tokenizer")), "utf8");
+  console.log(`Embedding with ${descriptor.id} on ${String(threads)} threads`);
+  return EmbeddingEngine.load({ model, tokenizerJson }, { spec: descriptor, threads });
 }
 function parseSources(value) {
   return value.split(",").map((raw) => {
@@ -5806,6 +7157,16 @@ function parseSources(value) {
     }
     return source;
   });
+}
+function positiveNumber(value, flag) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${flag} takes a positive number.`);
+  return parsed;
+}
+function positiveInteger(value, flag) {
+  const parsed = positiveNumber(value, flag);
+  if (!Number.isInteger(parsed)) throw new Error(`${flag} takes a whole number.`);
+  return parsed;
 }
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
