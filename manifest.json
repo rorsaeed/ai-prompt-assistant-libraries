@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "libraries": {
+    "seedance": {
+      "file": "seedance.c7ee41a97142.json",
+      "sha256": "c7ee41a971420308037611dbad4f031eadf95aca2a985cc587a8b9ce69253734",
+      "bytes": 19427240,
+      "entries": 5857,
+      "total_entries": 6626,
+      "updated_at": "2026-11-28T09:17:46.870Z"
+    },
+    "seedance_2_5": {
+      "file": "seedance_2_5.e42652de80ca.json",
+      "sha256": "e42652de80ca6e259e84fcc4fcc6e1d9377b28df111e53c0f25830fb1d9e5602",
+      "bytes": 9394544,
+      "entries": 2621,
+      "total_entries": 2649,
+      "updated_at": "2026-11-28T09:27:10.062Z"
+    },
+    "grok_imagine": {
+      "file": "grok_imagine.60fb8b7228cb.json",
+      "sha256": "60fb8b7228cb774c194a3dcadeed46699cc5226483c119c70cc348c3eea94164",
+      "bytes": 4937875,
+      "entries": 3434,
+      "total_entries": 3459,
+      "updated_at": "2026-11-28T09:39:10.090Z"
+    },
+    "claude_opus_5_5": {
+      "file": "claude_opus_5_5.6044760c3282.json",
+      "sha256": "6044760c3282e7b18abd0a15e12d7850fe3fa7c26c6abcaab264a8a42272d8dc",
+      "bytes": 1474887,
+      "entries": 834,
+      "total_entries": 835,
+      "updated_at": "2026-11-28T09:41:47.402Z"
+    },
+    "gpt_6_astra": {
+      "file": "gpt_6_astra.deb6f87a9c10.json",
+      "sha256": "deb6f87a9c107d0cca237c2712799510884cfdb4174b529a324de449f9c927b7",
+      "bytes": 1023833,
+      "entries": 662,
+      "total_entries": 662,
+      "updated_at": "2026-11-28T09:43:14.190Z"
+    },
+    "nano_banana_pro": {
+      "file": "nano_banana_pro.db47bb10541d.json",
+      "sha256": "db47bb10541d7a49b879a8d2dd4a31e768d12a7c98f58e5c31bab18bd028d099",
+      "bytes": 36245377,
+      "entries": 15324,
+      "total_entries": 15324,
+      "updated_at": "2026-11-28T09:43:21.272Z"
+    },
+    "nano_banana_trending": {
+      "file": "nano_banana_trending.b20ff9908477.json",
+      "sha256": "b20ff9908477e976d84aace87d6f1d549a2736728cf3892762e52077122addb9",
+      "bytes": 3151751,
+      "entries": 1446,
+      "total_entries": 1446,
+      "updated_at": "2026-11-28T09:43:21.855Z"
+    },
+    "gpt_image_2": {
+      "file": "gpt_image_2.29f780cfc79a.json",
+      "sha256": "29f780cfc79a48e3fc751344d526e189b0540fb054b96e48f3da10b2e560820c",
+      "bytes": 46402218,
+      "entries": 18111,
+      "total_entries": 18111,
+      "updated_at": "2026-11-28T09:43:29.745Z"
+    }
+  }
+}

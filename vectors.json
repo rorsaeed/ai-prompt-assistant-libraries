@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "model": {
+    "id": "paraphrase-multilingual-minilm-l12-v2",
+    "repository": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+    "passage_recipe": "title-description-prompt/v1",
+    "max_passage_tokens": 128,
+    "dimensions": 384,
+    "quantization": "int8",
+    "format": 1
+  },
+  "libraries": {
+    "seedance": {
+      "file": "seedance.5042299e0cbb.apv",
+      "sha256": "5042299e0cbb14b7a0a92ae38bc190a00650f067ba0c68d4f261b9c2b0cd712d",
+      "bytes": 2407978,
+      "vectors": 5857,
+      "entries": 5857,
+      "library_sha256": "c7ee41a971420308037611dbad4f031eadf95aca2a985cc587a8b9ce69253734",
+      "updated_at": "2026-11-28T09:43:30.513Z"
+    },
+    "seedance_2_5": {
+      "file": "seedance_2_5.31b8c3fe403e.apv",
+      "sha256": "31b8c3fe403ea1bf1704de94d19ac95bfae593789efabd161d54e2263b287a90",
+      "bytes": 1090022,
+      "vectors": 2621,
+      "entries": 2621,
+      "library_sha256": "e42652de80ca6e259e84fcc4fcc6e1d9377b28df111e53c0f25830fb1d9e5602",
+      "updated_at": "2026-11-28T09:43:30.850Z"
+    },
+    "grok_imagine": {
+      "file": "grok_imagine.b2a845debfe1.apv",
+      "sha256": "b2a845debfe1388d10d63346f93290be7fbe1d7e4b2361043e11dee1e8b43ddb",
+      "bytes": 1426298,
+      "vectors": 3434,
+      "entries": 3434,
+      "library_sha256": "60fb8b7228cb774c194a3dcadeed46699cc5226483c119c70cc348c3eea94164",
+      "updated_at": "2026-11-28T09:43:30.964Z"
+    },
+    "claude_opus_5_5": {
+      "file": "claude_opus_5_5.cd2853a624ac.apv",
+      "sha256": "cd2853a624acd973bb14719634b9c6cbeffd011b1ab759031a875ea56c9c259d",
+      "bytes": 349820,
+      "vectors": 834,
+      "entries": 834,
+      "library_sha256": "6044760c3282e7b18abd0a15e12d7850fe3fa7c26c6abcaab264a8a42272d8dc",
+      "updated_at": "2026-11-28T09:43:31.032Z"
+    },
+    "gpt_6_astra": {
+      "file": "gpt_6_astra.90126444a31a.apv",
+      "sha256": "90126444a31afb37e2dc4c81a159c9cd7fc3ba91a439e0560ffa0152c7287850",
+      "bytes": 275101,
+      "vectors": 662,
+      "entries": 662,
+      "library_sha256": "deb6f87a9c107d0cca237c2712799510884cfdb4174b529a324de449f9c927b7",
+      "updated_at": "2026-11-28T09:43:31.085Z"
+    },
+    "nano_banana_pro": {
+      "file": "nano_banana_pro.a9824769be68.apv",
+      "sha256": "a9824769be68aa7b6a4b80779f53e25f6016b1fe18a92ffd7225e3b951d58d72",
+      "bytes": 6411585,
+      "vectors": 15324,
+      "entries": 15324,
+      "library_sha256": "db47bb10541d7a49b879a8d2dd4a31e768d12a7c98f58e5c31bab18bd028d099",
+      "updated_at": "2026-11-28T09:43:31.328Z"
+    },
+    "nano_banana_trending": {
+      "file": "nano_banana_trending.b535eba3f4b4.apv",
+      "sha256": "b535eba3f4b4f54eaa6c82bddde13aba5be6f466c0a3707ac60deb3ae8ac0248",
+      "bytes": 633729,
+      "vectors": 1446,
+      "entries": 1446,
+      "library_sha256": "b20ff9908477e976d84aace87d6f1d549a2736728cf3892762e52077122addb9",
+      "updated_at": "2026-11-27T09:55:20.225Z"
+    },
+    "gpt_image_2": {
+      "file": "gpt_image_2.67410ae3e1f4.apv",
+      "sha256": "67410ae3e1f42fc73cae796754cb1b04a704a274e2f5376b335e9c18415f6073",
+      "bytes": 7516438,
+      "vectors": 18111,
+      "entries": 18111,
+      "library_sha256": "29f780cfc79a48e3fc751344d526e189b0540fb054b96e48f3da10b2e560820c",
+      "updated_at": "2026-11-28T01:19:04.109Z"
+    }
+  }
+}
